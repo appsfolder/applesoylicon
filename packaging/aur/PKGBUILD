@@ -10,7 +10,7 @@ makedepends=('cargo')
 depends=('glibc' 'coreutils')
 optdepends=('iio-sensor-proxy: automatic rain direction from device orientation')
 source=("${pkgname}-${pkgver}.tar.gz::${url}/releases/download/v${pkgver}/${pkgname}-${pkgver}.tar.gz")
-sha256sums=('PLACEHOLDER')
+sha256sums=('3022b9a0aeb49c956bae877c6c2f8841950cfff43612bacc1c830a1b1206959a')
 
 prepare() {
   cd "${pkgname}-${pkgver}"
