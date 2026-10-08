@@ -25,8 +25,9 @@ Press `r` to rotate the rain clockwise.
 ```
 
 The word can be passed directly as the first argument. `--direction auto` and
-`--gyro` read device orientation through `monitor-sensor` from
-`iio-sensor-proxy`; without a supported accelerometer, use a fixed direction.
+`--gyro` read a Linux IIO accelerometer directly at 40 Hz, apply its mount
+matrix, and smooth short spikes. Without a supported accelerometer, use a fixed
+direction.
 
 ## Install from source
 
@@ -40,9 +41,9 @@ The `packaging/aur` directory contains a release `PKGBUILD`. Before submitting
 the first AUR release:
 
 1. Push this repository to `https://github.com/appsfolder/applesoylicon`.
-2. Create and push tag `v1.1.0`.
+2. Create and push tag `v1.1.1`.
 3. Create a GitHub release for the tag and attach the provided
-   `applesoylicon-1.1.0.tar.gz` release archive without modifying it.
+   `applesoylicon-1.1.1.tar.gz` release archive without modifying it.
 4. Run `makepkg --printsrcinfo > .SRCINFO`, then test with `makepkg -sic` and
    `namcap` if available.
 5. Clone the empty AUR repository and copy in `PKGBUILD` and `.SRCINFO`.

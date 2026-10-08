@@ -1,8 +1,10 @@
 use std::env;
 use std::fmt::Write as FmtWrite;
-use std::io::{self, BufRead, BufReader, Read, Write};
+use std::fs;
+use std::io::{self, Read, Write};
 use std::os::fd::AsRawFd;
-use std::process::{Child, Command, ExitCode, Stdio};
+use std::path::{Path, PathBuf};
+use std::process::{Command, ExitCode, Stdio};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -89,48 +91,116 @@ impl Direction {
 }
 
 struct Sensor {
-    child: Child,
     directions: mpsc::Receiver<Direction>,
 }
 
 impl Sensor {
     fn start() -> io::Result<Self> {
-        let mut child = Command::new("monitor-sensor")
-            .arg("--accel")
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| io::Error::other("could not read orientation sensor"))?;
+        let device = find_accelerometer()?;
+        let matrix = read_mount_matrix(&device).unwrap_or([
+            1.0, 0.0, 0.0, //
+            0.0, 1.0, 0.0, //
+            0.0, 0.0, 1.0,
+        ]);
         let (tx, directions) = mpsc::channel();
         thread::spawn(move || {
-            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-                let direction = if line.contains("bottom-up") {
-                    Some(Direction::Up)
-                } else if line.contains("left-up") {
-                    Some(Direction::Right)
-                } else if line.contains("right-up") {
-                    Some(Direction::Left)
-                } else if line.contains("normal") {
-                    Some(Direction::Down)
-                } else {
-                    None
+            let mut filtered = [0.0_f64; 3];
+            let mut candidate = None;
+            let mut candidate_samples = 0_u8;
+            loop {
+                let Some(raw) = read_acceleration(&device) else {
+                    thread::sleep(Duration::from_millis(100));
+                    continue;
                 };
-                if direction.is_some_and(|value| tx.send(value).is_err()) {
+                let mounted = apply_matrix(matrix, raw);
+                for axis in 0..3 {
+                    filtered[axis] = filtered[axis] * 0.62 + mounted[axis] * 0.38;
+                }
+                let next = gravity_direction(filtered[0], filtered[1]);
+                if next == candidate {
+                    candidate_samples = candidate_samples.saturating_add(1);
+                } else {
+                    candidate = next;
+                    candidate_samples = 1;
+                }
+                if candidate_samples == 3 && candidate.is_some_and(|value| tx.send(value).is_err())
+                {
                     break;
                 }
+                thread::sleep(Duration::from_millis(25));
             }
         });
-        Ok(Self { child, directions })
+        Ok(Self { directions })
     }
 }
 
-impl Drop for Sensor {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+fn find_accelerometer() -> io::Result<PathBuf> {
+    let entries = fs::read_dir("/sys/bus/iio/devices")?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.join("in_accel_x_raw").is_file()
+            && path.join("in_accel_y_raw").is_file()
+            && path.join("in_accel_z_raw").is_file()
+        {
+            return Ok(path);
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::NotFound,
+        "no readable IIO accelerometer found",
+    ))
+}
+
+fn read_number(path: &Path) -> Option<f64> {
+    fs::read_to_string(path).ok()?.trim().parse().ok()
+}
+
+fn read_acceleration(device: &Path) -> Option<[f64; 3]> {
+    Some([
+        read_number(&device.join("in_accel_x_raw"))?,
+        read_number(&device.join("in_accel_y_raw"))?,
+        read_number(&device.join("in_accel_z_raw"))?,
+    ])
+}
+
+fn read_mount_matrix(device: &Path) -> Option<[f64; 9]> {
+    let text = fs::read_to_string(device.join("in_accel_mount_matrix")).ok()?;
+    let values: Vec<f64> = text
+        .split(|character: char| character == ',' || character == ';' || character.is_whitespace())
+        .filter(|part| !part.is_empty())
+        .map(str::parse)
+        .collect::<Result<_, _>>()
+        .ok()?;
+    values.try_into().ok()
+}
+
+fn apply_matrix(matrix: [f64; 9], vector: [f64; 3]) -> [f64; 3] {
+    [
+        matrix[0] * vector[0] + matrix[1] * vector[1] + matrix[2] * vector[2],
+        matrix[3] * vector[0] + matrix[4] * vector[1] + matrix[5] * vector[2],
+        matrix[6] * vector[0] + matrix[7] * vector[1] + matrix[8] * vector[2],
+    ]
+}
+
+fn gravity_direction(x: f64, y: f64) -> Option<Direction> {
+    let magnitude = x.abs().max(y.abs());
+    if magnitude < 180.0 {
+        return None;
+    }
+    if x.abs() > y.abs() * 1.12 {
+        Some(if x > 0.0 {
+            Direction::Right
+        } else {
+            Direction::Left
+        })
+    } else if y.abs() > x.abs() * 1.12 {
+        Some(if y > 0.0 {
+            Direction::Down
+        } else {
+            Direction::Up
+        })
+    } else {
+        None
     }
 }
 
@@ -366,7 +436,7 @@ fn run(mut config: Config) -> io::Result<()> {
     let sensor = if config.gyro {
         Some(Sensor::start().map_err(|error| {
             io::Error::other(format!(
-                "gyro mode needs iio-sensor-proxy/monitor-sensor: {error}"
+                "gyro mode needs a readable Linux IIO accelerometer: {error}"
             ))
         })?)
     } else {
@@ -662,5 +732,15 @@ mod tests {
             oriented_position(0, 2, 10, 5, Direction::Left),
             Some((9, 2))
         );
+    }
+
+    #[test]
+    fn gravity_uses_dominant_axis_and_dead_zone() {
+        assert_eq!(gravity_direction(800.0, 20.0), Some(Direction::Right));
+        assert_eq!(gravity_direction(-800.0, 20.0), Some(Direction::Left));
+        assert_eq!(gravity_direction(20.0, 800.0), Some(Direction::Down));
+        assert_eq!(gravity_direction(20.0, -800.0), Some(Direction::Up));
+        assert_eq!(gravity_direction(50.0, 40.0), None);
+        assert_eq!(gravity_direction(700.0, 700.0), None);
     }
 }
