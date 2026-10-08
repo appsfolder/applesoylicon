@@ -1,10 +1,13 @@
-.TH APPLESOYLICON 1 "October 2026" "applesoylicon 1.2.1" "User Commands"
+.TH APPLESOYLICON 1 "October 2026" "applesoylicon 1.3.0" "User Commands"
 .SH NAME
 applesoylicon \- animated terminal rain with accelerometer-driven physics
 .SH SYNOPSIS
 .B applesoylicon
 .RI [ WORD ]
 .RI [ OPTIONS ]
+.br
+.B applesoylicon --setup
+.RI KEY=VALUE ...
 .SH DESCRIPTION
 .B applesoylicon
 draws animated character rain in an interactive terminal.
@@ -33,6 +36,11 @@ enables physical sensor mode.  The default is
 Enable physical rain driven by raw Linux IIO acceleration.  This is equivalent
 to
 .BR "--direction auto" .
+.TP
+.BI "--gyro-offset " DEG
+Rotate the mounted sensor vector clockwise by 0, 90, 180, or 270 degrees.
+This corrects installations where the display has a persistent rotation that
+does not match the accelerometer mount orientation.
 .TP
 .BI "--palette " NAME
 Select
@@ -64,6 +72,25 @@ Display command-line help and exit.
 .TP
 .BR -V , " --version"
 Display version information and exit.
+.TP
+.BI "--setup " KEY=VALUE...
+Validate and save one or more persistent defaults.  Supported keys are
+.BR palette ,
+.BR fps ,
+.BR density ,
+.BR message ,
+.BR seed ,
+.BR direction ,
+.BR gyro ,
+and
+.BR gyro-offset .
+Command-line options override saved values.
+.TP
+.B --setup show
+Print the configuration path and saved values.
+.TP
+.B --setup reset
+Remove all saved values and restore built-in defaults.
 .SH KEYS
 .TP
 .BR q , " Esc" , " Ctrl-C"
@@ -119,10 +146,20 @@ Use physical acceleration with sparse rain:
 .EX
 applesoylicon SOY --gyro --density 0.25
 .EE
+.PP
+Persist sensor correction and preferred defaults:
+.PP
+.EX
+applesoylicon --setup gyro-offset=90 gyro=true palette=soy density=0.4
+.EE
 .SH FILES
 .TP
 .I /sys/bus/iio/devices/iio:device*/in_accel_*_raw
 Raw accelerometer channels used by physical sensor mode.
+.TP
+.I $XDG_CONFIG_HOME/applesoylicon/config
+Persistent defaults.  If XDG_CONFIG_HOME is unset, the path is
+.IR $HOME/.config/applesoylicon/config .
 .SH EXIT STATUS
 Returns 0 on success, 1 on runtime failure, and 2 for invalid command-line
 arguments.

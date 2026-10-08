@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::collections::VecDeque;
 use std::env;
 use std::fmt::Write as FmtWrite;
@@ -62,6 +63,7 @@ struct Config {
     seed: u64,
     direction: Direction,
     gyro: bool,
+    gyro_offset: u16,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -322,19 +324,182 @@ fn reset_drop(drop: &mut RainDrop, extent: usize, density: f64, rng: &mut Rng, r
     drop.length = 7 + rng.usize(18);
 }
 
+fn config_path() -> Result<PathBuf, String> {
+    if let Some(path) = env::var_os("XDG_CONFIG_HOME") {
+        return Ok(PathBuf::from(path).join("applesoylicon/config"));
+    }
+    env::var_os("HOME")
+        .map(PathBuf::from)
+        .map(|path| path.join(".config/applesoylicon/config"))
+        .ok_or_else(|| "neither XDG_CONFIG_HOME nor HOME is set".to_owned())
+}
+
+fn load_settings() -> BTreeMap<String, String> {
+    let Ok(path) = config_path() else {
+        return BTreeMap::new();
+    };
+    let Ok(text) = fs::read_to_string(path) else {
+        return BTreeMap::new();
+    };
+    text.lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                return None;
+            }
+            let (key, value) = line.split_once('=')?;
+            Some((key.trim().to_owned(), value.trim().to_owned()))
+        })
+        .collect()
+}
+
+fn parse_bool(value: &str) -> Option<bool> {
+    match value {
+        "true" | "yes" | "on" | "1" => Some(true),
+        "false" | "no" | "off" | "0" => Some(false),
+        _ => None,
+    }
+}
+
+fn validate_setting(key: &str, value: &str) -> Result<String, String> {
+    match key {
+        "palette" if Palette::named(value).is_some() => Ok(value.to_owned()),
+        "fps" => value
+            .parse::<u64>()
+            .ok()
+            .filter(|number| (5..=60).contains(number))
+            .map(|_| value.to_owned())
+            .ok_or_else(|| "fps must be an integer from 5 through 60".to_owned()),
+        "density" => value
+            .parse::<f64>()
+            .ok()
+            .filter(|number| (0.05..=1.0).contains(number))
+            .map(|_| value.to_owned())
+            .ok_or_else(|| "density must be a number from 0.05 through 1.0".to_owned()),
+        "message" if !value.is_empty() && value.len() <= 40 && value.is_ascii() => {
+            Ok(value.to_owned())
+        }
+        "seed" if value == "random" || value.parse::<u64>().is_ok() => Ok(value.to_owned()),
+        "direction" if Direction::named(value).is_some() || value == "auto" => Ok(value.to_owned()),
+        "gyro" => parse_bool(value)
+            .map(|enabled| enabled.to_string())
+            .ok_or_else(|| "gyro must be true or false".to_owned()),
+        "gyro-offset" => value
+            .parse::<u16>()
+            .ok()
+            .filter(|angle| matches!(angle, 0 | 90 | 180 | 270))
+            .map(|_| value.to_owned())
+            .ok_or_else(|| "gyro-offset must be 0, 90, 180, or 270".to_owned()),
+        "palette" => Err("palette must be green, amber, ice, or soy".to_owned()),
+        "message" => Err("message must be 1-40 ASCII characters".to_owned()),
+        unknown => Err(format!("unknown setting '{unknown}'")),
+    }
+}
+
+fn save_settings(settings: &BTreeMap<String, String>) -> Result<PathBuf, String> {
+    let path = config_path()?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| "invalid configuration path".to_owned())?;
+    fs::create_dir_all(parent)
+        .map_err(|error| format!("cannot create config directory: {error}"))?;
+    let temporary = parent.join(format!(".config.tmp.{}", std::process::id()));
+    let mut text = String::from("# applesoylicon persistent defaults\n");
+    for (key, value) in settings {
+        let _ = writeln!(text, "{key}={value}");
+    }
+    fs::write(&temporary, text).map_err(|error| format!("cannot write config: {error}"))?;
+    fs::rename(&temporary, &path).map_err(|error| format!("cannot replace config: {error}"))?;
+    Ok(path)
+}
+
+fn run_setup(arguments: &[String]) -> Result<(), String> {
+    let path = config_path()?;
+    if arguments.is_empty() || arguments == ["show"] {
+        println!("{}", path.display());
+        let settings = load_settings();
+        if settings.is_empty() {
+            println!("(no saved settings)");
+        } else {
+            for (key, value) in settings {
+                println!("{key}={value}");
+            }
+        }
+        return Ok(());
+    }
+    if arguments == ["reset"] {
+        match fs::remove_file(&path) {
+            Ok(()) => println!("reset {}", path.display()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                println!("already reset {}", path.display())
+            }
+            Err(error) => return Err(format!("cannot reset config: {error}")),
+        }
+        return Ok(());
+    }
+    let mut settings = load_settings();
+    for assignment in arguments {
+        let (key, value) = assignment
+            .split_once('=')
+            .ok_or_else(|| format!("expected key=value, got '{assignment}'"))?;
+        settings.insert(key.to_owned(), validate_setting(key, value)?);
+    }
+    let saved = save_settings(&settings)?;
+    println!("saved {}", saved.display());
+    for assignment in arguments {
+        println!("{assignment}");
+    }
+    Ok(())
+}
+
 fn parse_args() -> Result<Option<Config>, String> {
-    let mut palette_name = "green".to_owned();
-    let mut fps = 24_u64;
-    let mut density = 0.72_f64;
-    let mut message = "APPLESOYLICON".to_owned();
-    let mut message_was_set = false;
-    let mut direction = Direction::Down;
-    let mut gyro = false;
-    let mut seed = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos() as u64;
     let args: Vec<String> = env::args().skip(1).collect();
+    if args.first().is_some_and(|argument| argument == "--setup") {
+        run_setup(&args[1..])?;
+        return Ok(None);
+    }
+    let saved = load_settings();
+    let mut palette_name = saved
+        .get("palette")
+        .filter(|value| Palette::named(value).is_some())
+        .cloned()
+        .unwrap_or_else(|| "green".to_owned());
+    let mut fps = saved
+        .get("fps")
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(24_u64);
+    let mut density = saved
+        .get("density")
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(0.72_f64);
+    let mut message = saved
+        .get("message")
+        .cloned()
+        .unwrap_or_else(|| "APPLESOYLICON".to_owned());
+    let mut message_was_set = false;
+    let saved_direction = saved.get("direction").map(String::as_str).unwrap_or("down");
+    let mut direction = Direction::named(saved_direction).unwrap_or(Direction::Down);
+    let mut gyro = saved_direction == "auto"
+        || saved
+            .get("gyro")
+            .and_then(|value| parse_bool(value))
+            .unwrap_or(false);
+    let mut gyro_offset = saved
+        .get("gyro-offset")
+        .and_then(|value| value.parse().ok())
+        .filter(|angle| matches!(angle, 0 | 90 | 180 | 270))
+        .unwrap_or(0_u16);
+    let random_seed = || {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64
+    };
+    let mut seed = saved
+        .get("seed")
+        .filter(|value| value.as_str() != "random")
+        .and_then(|value| value.parse().ok())
+        .unwrap_or_else(random_seed);
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -347,7 +512,8 @@ fn parse_args() -> Result<Option<Config>, String> {
                 return Ok(None);
             }
             "--gyro" => gyro = true,
-            "--palette" | "--fps" | "--density" | "--message" | "--seed" | "--direction" => {
+            "--palette" | "--fps" | "--density" | "--message" | "--seed" | "--direction"
+            | "--gyro-offset" => {
                 let flag = args[i].clone();
                 i += 1;
                 let value = args
@@ -376,6 +542,14 @@ fn parse_args() -> Result<Option<Config>, String> {
                             direction = Direction::named(value).ok_or_else(|| {
                                 "--direction must be down, up, left, right, or auto".to_owned()
                             })?;
+                        }
+                    }
+                    "--gyro-offset" => {
+                        gyro_offset = value
+                            .parse()
+                            .map_err(|_| "--gyro-offset must be 0, 90, 180, or 270".to_owned())?;
+                        if !matches!(gyro_offset, 0 | 90 | 180 | 270) {
+                            return Err("--gyro-offset must be 0, 90, 180, or 270".to_owned());
                         }
                     }
                     "--seed" => {
@@ -414,12 +588,13 @@ fn parse_args() -> Result<Option<Config>, String> {
         seed,
         direction,
         gyro,
+        gyro_offset,
     }))
 }
 
 fn print_help() {
     println!(
-        "applesoylicon {VERSION} — terminal rain, zero consequences\n\nUSAGE:\n    applesoylicon [WORD] [OPTIONS]\n\nOPTIONS:\n    --direction <DIR>   down, up, left, right, or auto [default: down]\n    --gyro              Physical rain driven by raw IIO acceleration\n    --palette <NAME>    green, amber, ice, or soy [default: green]\n    --fps <N>           Frames per second, 5-60 [default: 24]\n    --density <N>       Rain density, 0.05-1.0 [default: 0.72]\n    --message <TEXT>    Alias for positional WORD [default: APPLESOYLICON]\n    --seed <N>          Deterministic random seed\n    -h, --help          Print help\n    -V, --version       Print version\n\nKEYS:\n    q, Esc, Ctrl-C      Leave the rain\n    [ / ]               Decrease / increase density\n    r                   Rotate fixed direction clockwise\n    p                   Cycle palette\n    + / -               Change speed\n    d                   Toggle dense mode"
+        "applesoylicon {VERSION} — terminal rain, zero consequences\n\nUSAGE:\n    applesoylicon [WORD] [OPTIONS]\n    applesoylicon --setup KEY=VALUE...\n    applesoylicon --setup [show|reset]\n\nOPTIONS:\n    --direction <DIR>   down, up, left, right, or auto [default: down]\n    --gyro              Physical rain driven by raw IIO acceleration\n    --gyro-offset <DEG> Rotate sensor vector: 0, 90, 180, or 270\n    --palette <NAME>    green, amber, ice, or soy [default: green]\n    --fps <N>           Frames per second, 5-60 [default: 24]\n    --density <N>       Rain density, 0.05-1.0 [default: 0.72]\n    --message <TEXT>    Alias for positional WORD [default: APPLESOYLICON]\n    --seed <N>          Deterministic random seed\n    --setup ...         Save, show, or reset persistent defaults\n    -h, --help          Print help\n    -V, --version       Print version\n\nSETUP KEYS:\n    palette fps density message seed direction gyro gyro-offset\n\nKEYS:\n    q, Esc, Ctrl-C      Leave the rain\n    [ / ]               Decrease / increase density\n    r                   Rotate fixed direction clockwise\n    p                   Cycle palette\n    + / -               Change speed\n    d                   Toggle dense mode"
     );
 }
 
@@ -626,6 +801,15 @@ fn physics_acceleration(reading: [f64; 3]) -> (f64, f64) {
     )
 }
 
+fn rotate_sensor(reading: [f64; 3], offset: u16) -> [f64; 3] {
+    match offset {
+        90 => [-reading[1], reading[0], reading[2]],
+        180 => [-reading[0], -reading[1], reading[2]],
+        270 => [reading[1], -reading[0], reading[2]],
+        _ => reading,
+    }
+}
+
 fn run_physics(
     mut config: Config,
     keys: mpsc::Receiver<u8>,
@@ -689,7 +873,7 @@ fn run_physics(
             print!("\x1b[2J");
         }
 
-        let (ax, ay) = physics_acceleration(gravity);
+        let (ax, ay) = physics_acceleration(rotate_sensor(gravity, config.gyro_offset));
         let mut out = String::with_capacity((particles.len() * 10 + previous_cells.len()) * 16);
         for (x, y) in previous_cells.drain(..) {
             let _ = write!(out, "\x1b[{};{}H ", y + 1, x + 1);
@@ -930,5 +1114,14 @@ mod tests {
     #[test]
     fn density_controls_particle_count() {
         assert!(particle_target(80, 24, 0.9) > particle_target(80, 24, 0.2));
+    }
+
+    #[test]
+    fn gyro_offset_rotates_clockwise() {
+        let reading = [2.0, 1.0, 3.0];
+        assert_eq!(rotate_sensor(reading, 0), [2.0, 1.0, 3.0]);
+        assert_eq!(rotate_sensor(reading, 90), [-1.0, 2.0, 3.0]);
+        assert_eq!(rotate_sensor(reading, 180), [-2.0, -1.0, 3.0]);
+        assert_eq!(rotate_sensor(reading, 270), [1.0, -2.0, 3.0]);
     }
 }

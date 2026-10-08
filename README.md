@@ -34,6 +34,17 @@ Without a supported accelerometer, use a fixed direction.
 The complete command reference is available through `man applesoylicon` after
 installation.
 
+Persistent defaults use `--setup` and are stored under the XDG config directory:
+
+```console
+$ applesoylicon --setup gyro-offset=90 gyro=true palette=soy density=0.4
+$ applesoylicon --setup show
+$ applesoylicon --setup reset
+```
+
+Every normal setting can be saved. Explicit command-line flags override the
+saved values for one run.
+
 ## Install from source
 
 ```console
@@ -46,9 +57,9 @@ The `packaging/aur` directory contains a release `PKGBUILD`. Before submitting
 the first AUR release:
 
 1. Push this repository to `https://github.com/appsfolder/applesoylicon`.
-2. Create and push tag `v1.2.1`.
+2. Create and push tag `v1.3.0`.
 3. Create a GitHub release for the tag and attach the provided
-   `applesoylicon-1.2.1.tar.gz` release archive without modifying it.
+   `applesoylicon-1.3.0.tar.gz` release archive without modifying it.
 4. Run `makepkg --printsrcinfo > .SRCINFO`, then test with `makepkg -sic` and
    `namcap` if available.
 5. Clone the empty AUR repository and copy in `PKGBUILD` and `.SRCINFO`.
