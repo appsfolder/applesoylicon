@@ -1,0 +1,17 @@
+[package]
+name = "applesoylicon"
+version = "1.0.0"
+edition = "2024"
+rust-version = "1.85"
+description = "A playful Matrix-rain terminal screensaver"
+license = "MIT"
+repository = "https://github.com/appsfolder/applesoylicon"
+keywords = ["terminal", "screensaver", "matrix", "animation"]
+categories = ["command-line-utilities"]
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
