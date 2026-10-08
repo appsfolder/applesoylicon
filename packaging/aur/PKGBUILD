@@ -9,7 +9,7 @@ license=('MIT')
 makedepends=('cargo')
 depends=('glibc' 'coreutils')
 source=("${pkgname}-${pkgver}.tar.gz::${url}/releases/download/v${pkgver}/${pkgname}-${pkgver}.tar.gz")
-sha256sums=('PLACEHOLDER')
+sha256sums=('05b9945533be4d2f7850be5a96ae7d9d1e6b771a849658a682cb608d8ed14b07')
 
 prepare() {
   cd "${pkgname}-${pkgver}"

@@ -1,6 +1,6 @@
 pkgbase = applesoylicon
 	pkgdesc = Playful Matrix-rain terminal screensaver
-	pkgver = 1.1.1
+	pkgver = 1.2.0
 	pkgrel = 1
 	url = https://github.com/appsfolder/applesoylicon
 	arch = x86_64
@@ -9,7 +9,7 @@ pkgbase = applesoylicon
 	makedepends = cargo
 	depends = glibc
 	depends = coreutils
-	source = applesoylicon-1.1.1.tar.gz::https://github.com/appsfolder/applesoylicon/releases/download/v1.1.1/applesoylicon-1.1.1.tar.gz
-	sha256sums = bb9c97471ecc1b477277282ad7e0204a815723b5984e3540b9226cbb5c42d2c6
+	source = applesoylicon-1.2.0.tar.gz::https://github.com/appsfolder/applesoylicon/releases/download/v1.2.0/applesoylicon-1.2.0.tar.gz
+	sha256sums = 05b9945533be4d2f7850be5a96ae7d9d1e6b771a849658a682cb608d8ed14b07
 
 pkgname = applesoylicon
