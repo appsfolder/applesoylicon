@@ -1,8 +1,8 @@
 use std::env;
 use std::fmt::Write as FmtWrite;
-use std::io::{self, Read, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::os::fd::AsRawFd;
-use std::process::{Command, ExitCode, Stdio};
+use std::process::{Child, Command, ExitCode, Stdio};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -57,6 +57,81 @@ struct Config {
     density: f64,
     message: String,
     seed: u64,
+    direction: Direction,
+    gyro: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Direction {
+    Down,
+    Up,
+    Left,
+    Right,
+}
+
+impl Direction {
+    fn named(value: &str) -> Option<Self> {
+        match value {
+            "down" => Some(Self::Down),
+            "up" => Some(Self::Up),
+            "left" => Some(Self::Left),
+            "right" => Some(Self::Right),
+            _ => None,
+        }
+    }
+
+    fn dimensions(self, width: usize, height: usize) -> (usize, usize) {
+        match self {
+            Self::Down | Self::Up => (width, height),
+            Self::Left | Self::Right => (height, width),
+        }
+    }
+}
+
+struct Sensor {
+    child: Child,
+    directions: mpsc::Receiver<Direction>,
+}
+
+impl Sensor {
+    fn start() -> io::Result<Self> {
+        let mut child = Command::new("monitor-sensor")
+            .arg("--accel")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| io::Error::other("could not read orientation sensor"))?;
+        let (tx, directions) = mpsc::channel();
+        thread::spawn(move || {
+            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                let direction = if line.contains("bottom-up") {
+                    Some(Direction::Up)
+                } else if line.contains("left-up") {
+                    Some(Direction::Right)
+                } else if line.contains("right-up") {
+                    Some(Direction::Left)
+                } else if line.contains("normal") {
+                    Some(Direction::Down)
+                } else {
+                    None
+                };
+                if direction.is_some_and(|value| tx.send(value).is_err()) {
+                    break;
+                }
+            }
+        });
+        Ok(Self { child, directions })
+    }
+}
+
+impl Drop for Sensor {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -174,12 +249,12 @@ fn terminal_size() -> (usize, usize) {
     }
 }
 
-fn reset_drop(drop: &mut RainDrop, height: usize, density: f64, rng: &mut Rng, random_y: bool) {
+fn reset_drop(drop: &mut RainDrop, extent: usize, density: f64, rng: &mut Rng, random_y: bool) {
     drop.active = rng.unit() <= density;
     drop.y = if random_y {
-        rng.usize(height) as f64
+        rng.usize(extent) as f64
     } else {
-        -(rng.usize(height.max(2) / 2 + 1) as f64)
+        -(rng.usize(extent.max(2) / 2 + 1) as f64)
     };
     drop.speed = 0.28 + rng.unit() * 0.72;
     drop.length = 7 + rng.usize(18);
@@ -190,6 +265,9 @@ fn parse_args() -> Result<Option<Config>, String> {
     let mut fps = 24_u64;
     let mut density = 0.72_f64;
     let mut message = "APPLESOYLICON".to_owned();
+    let mut message_was_set = false;
+    let mut direction = Direction::Down;
+    let mut gyro = false;
     let mut seed = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -206,7 +284,8 @@ fn parse_args() -> Result<Option<Config>, String> {
                 println!("applesoylicon {VERSION}");
                 return Ok(None);
             }
-            "--palette" | "--fps" | "--density" | "--message" | "--seed" => {
+            "--gyro" => gyro = true,
+            "--palette" | "--fps" | "--density" | "--message" | "--seed" | "--direction" => {
                 let flag = args[i].clone();
                 i += 1;
                 let value = args
@@ -224,7 +303,19 @@ fn parse_args() -> Result<Option<Config>, String> {
                             .parse()
                             .map_err(|_| "--density must be a number".to_owned())?
                     }
-                    "--message" => message = value.clone(),
+                    "--message" => {
+                        message = value.clone();
+                        message_was_set = true;
+                    }
+                    "--direction" => {
+                        if value == "auto" {
+                            gyro = true;
+                        } else {
+                            direction = Direction::named(value).ok_or_else(|| {
+                                "--direction must be down, up, left, right, or auto".to_owned()
+                            })?;
+                        }
+                    }
                     "--seed" => {
                         seed = value
                             .parse()
@@ -232,6 +323,10 @@ fn parse_args() -> Result<Option<Config>, String> {
                     }
                     _ => unreachable!(),
                 }
+            }
+            value if !value.starts_with('-') && !message_was_set => {
+                message = value.to_owned();
+                message_was_set = true;
             }
             unknown => return Err(format!("unknown option: {unknown}")),
         }
@@ -255,17 +350,28 @@ fn parse_args() -> Result<Option<Config>, String> {
         density,
         message,
         seed,
+        direction,
+        gyro,
     }))
 }
 
 fn print_help() {
     println!(
-        "applesoylicon {VERSION} — terminal rain, zero consequences\n\nUSAGE:\n    applesoylicon [OPTIONS]\n\nOPTIONS:\n    --palette <NAME>    green, amber, ice, or soy [default: green]\n    --fps <N>           Frames per second, 5-60 [default: 24]\n    --density <N>       Active-column ratio, 0.05-1.0 [default: 0.72]\n    --message <TEXT>    Hidden message, 1-40 ASCII chars [default: APPLESOYLICON]\n    --seed <N>          Deterministic random seed\n    -h, --help          Print help\n    -V, --version       Print version\n\nKEYS:\n    q, Esc, Ctrl-C      Leave the rain\n    p                   Cycle palette\n    + / -               Change speed\n    d                   Toggle dense mode"
+        "applesoylicon {VERSION} — terminal rain, zero consequences\n\nUSAGE:\n    applesoylicon [WORD] [OPTIONS]\n\nOPTIONS:\n    --direction <DIR>   down, up, left, right, or auto [default: down]\n    --gyro              Follow device orientation (same as --direction auto)\n    --palette <NAME>    green, amber, ice, or soy [default: green]\n    --fps <N>           Frames per second, 5-60 [default: 24]\n    --density <N>       Active-lane ratio, 0.05-1.0 [default: 0.72]\n    --message <TEXT>    Alias for positional WORD [default: APPLESOYLICON]\n    --seed <N>          Deterministic random seed\n    -h, --help          Print help\n    -V, --version       Print version\n\nKEYS:\n    q, Esc, Ctrl-C      Leave the rain\n    r                   Rotate direction clockwise\n    p                   Cycle palette\n    + / -               Change speed\n    d                   Toggle dense mode"
     );
 }
 
 fn run(mut config: Config) -> io::Result<()> {
     let _terminal = Terminal::enter()?;
+    let sensor = if config.gyro {
+        Some(Sensor::start().map_err(|error| {
+            io::Error::other(format!(
+                "gyro mode needs iio-sensor-proxy/monitor-sensor: {error}"
+            ))
+        })?)
+    } else {
+        None
+    };
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
         for byte in io::stdin().lock().bytes() {
@@ -288,18 +394,7 @@ fn run(mut config: Config) -> io::Result<()> {
     let mut palette_index = 0;
     let mut rng = Rng::new(config.seed);
     let (mut width, mut height) = terminal_size();
-    let mut drops = vec![
-        RainDrop {
-            y: 0.0,
-            speed: 0.5,
-            length: 12,
-            active: true
-        };
-        width
-    ];
-    for drop in &mut drops {
-        reset_drop(drop, height, config.density, &mut rng, true);
-    }
+    let mut drops = make_drops(config.direction, width, height, config.density, &mut rng);
     let mut mark = new_mark(width, height, config.message.len(), &mut rng);
     let mut frame_time = Duration::from_millis(1000 / config.fps);
     loop {
@@ -310,6 +405,16 @@ fn run(mut config: Config) -> io::Result<()> {
                 b'p' => {
                     palette_index = (palette_index + 1) % palettes.len();
                     config.palette = palettes[palette_index];
+                }
+                b'r' => {
+                    config.direction = match config.direction {
+                        Direction::Down => Direction::Left,
+                        Direction::Left => Direction::Up,
+                        Direction::Up => Direction::Right,
+                        Direction::Right => Direction::Down,
+                    };
+                    drops = make_drops(config.direction, width, height, config.density, &mut rng);
+                    print!("\x1b[2J");
                 }
                 b'+' | b'=' => {
                     frame_time = frame_time
@@ -329,32 +434,39 @@ fn run(mut config: Config) -> io::Result<()> {
                 _ => {}
             }
         }
+        if let Some(sensor) = &sensor {
+            while let Ok(direction) = sensor.directions.try_recv() {
+                if direction != config.direction {
+                    config.direction = direction;
+                    drops = make_drops(config.direction, width, height, config.density, &mut rng);
+                    print!("\x1b[2J");
+                }
+            }
+        }
         let (new_width, new_height) = terminal_size();
         if (new_width, new_height) != (width, height) {
             (width, height) = (new_width, new_height);
-            drops = vec![
-                RainDrop {
-                    y: 0.0,
-                    speed: 0.5,
-                    length: 12,
-                    active: true
-                };
-                width
-            ];
-            for drop in &mut drops {
-                reset_drop(drop, height, config.density, &mut rng, true);
-            }
+            drops = make_drops(config.direction, width, height, config.density, &mut rng);
             mark = new_mark(width, height, config.message.len(), &mut rng);
             print!("\x1b[2J");
         }
         let mut out = String::with_capacity(width * 32);
-        let mut hit_mark = false;
-        for (x, drop) in drops.iter_mut().enumerate() {
+        let (lanes, extent) = config.direction.dimensions(width, height);
+        for (lane, drop) in drops.iter_mut().enumerate().take(lanes) {
             if !drop.active {
                 continue;
             }
             let head = drop.y as isize;
-            draw_cell(&mut out, head, x, height, config.palette.head, &mut rng);
+            draw_cell(
+                &mut out,
+                head,
+                lane,
+                width,
+                height,
+                config.direction,
+                config.palette.head,
+                &mut rng,
+            );
             for i in 1..=drop.length {
                 let y = head - i as isize;
                 let color = if i < drop.length / 3 {
@@ -362,22 +474,23 @@ fn run(mut config: Config) -> io::Result<()> {
                 } else {
                     config.palette.far
                 };
-                draw_cell(&mut out, y, x, height, color, &mut rng);
+                draw_cell(
+                    &mut out,
+                    y,
+                    lane,
+                    width,
+                    height,
+                    config.direction,
+                    color,
+                    &mut rng,
+                );
             }
             let clear = head - drop.length as isize - 1;
-            if clear >= 0 && clear < height as isize {
-                let _ = write!(out, "\x1b[{};{}H ", clear + 1, x + 1);
-            }
-            if mark.0 == head as usize && x >= mark.1 && x < mark.1 + config.message.len() {
-                hit_mark = true;
-            }
+            draw_blank(&mut out, clear, lane, width, height, config.direction);
             drop.y += drop.speed;
-            if head - drop.length as isize > height as isize {
-                reset_drop(drop, height, config.density, &mut rng, false);
+            if head - drop.length as isize > extent as isize {
+                reset_drop(drop, extent, config.density, &mut rng, false);
             }
-        }
-        if hit_mark {
-            mark = new_mark(width, height, config.message.len(), &mut rng);
         }
         if mark.0 < height && mark.1 + config.message.len() <= width {
             let _ = write!(
@@ -395,10 +508,72 @@ fn run(mut config: Config) -> io::Result<()> {
     }
 }
 
-fn draw_cell(out: &mut String, y: isize, x: usize, height: usize, color: &str, rng: &mut Rng) {
-    if y >= 0 && y < height as isize {
+fn make_drops(
+    direction: Direction,
+    width: usize,
+    height: usize,
+    density: f64,
+    rng: &mut Rng,
+) -> Vec<RainDrop> {
+    let (lanes, extent) = direction.dimensions(width, height);
+    let mut drops = vec![
+        RainDrop {
+            y: 0.0,
+            speed: 0.5,
+            length: 12,
+            active: true,
+        };
+        lanes
+    ];
+    for drop in &mut drops {
+        reset_drop(drop, extent, density, rng, true);
+    }
+    drops
+}
+
+fn oriented_position(
+    primary: isize,
+    lane: usize,
+    width: usize,
+    height: usize,
+    direction: Direction,
+) -> Option<(usize, usize)> {
+    let (x, y) = match direction {
+        Direction::Down => (lane as isize, primary),
+        Direction::Up => (lane as isize, height as isize - 1 - primary),
+        Direction::Right => (primary, lane as isize),
+        Direction::Left => (width as isize - 1 - primary, lane as isize),
+    };
+    (x >= 0 && x < width as isize && y >= 0 && y < height as isize)
+        .then_some((x as usize, y as usize))
+}
+
+fn draw_cell(
+    out: &mut String,
+    primary: isize,
+    lane: usize,
+    width: usize,
+    height: usize,
+    direction: Direction,
+    color: &str,
+    rng: &mut Rng,
+) {
+    if let Some((x, y)) = oriented_position(primary, lane, width, height, direction) {
         let glyph = GLYPHS[rng.usize(GLYPHS.len())] as char;
         let _ = write!(out, "\x1b[{};{}H{}{}", y + 1, x + 1, color, glyph);
+    }
+}
+
+fn draw_blank(
+    out: &mut String,
+    primary: isize,
+    lane: usize,
+    width: usize,
+    height: usize,
+    direction: Direction,
+) {
+    if let Some((x, y)) = oriented_position(primary, lane, width, height, direction) {
+        let _ = write!(out, "\x1b[{};{}H ", y + 1, x + 1);
     }
 }
 
@@ -470,5 +645,22 @@ mod tests {
             assert!(y < 24);
             assert!(x + 13 <= 80);
         }
+    }
+
+    #[test]
+    fn directions_map_to_screen_edges() {
+        assert_eq!(
+            oriented_position(0, 2, 10, 5, Direction::Down),
+            Some((2, 0))
+        );
+        assert_eq!(oriented_position(0, 2, 10, 5, Direction::Up), Some((2, 4)));
+        assert_eq!(
+            oriented_position(0, 2, 10, 5, Direction::Right),
+            Some((0, 2))
+        );
+        assert_eq!(
+            oriented_position(0, 2, 10, 5, Direction::Left),
+            Some((9, 2))
+        );
     }
 }
