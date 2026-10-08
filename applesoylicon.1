@@ -1,0 +1,134 @@
+.TH APPLESOYLICON 1 "October 2026" "applesoylicon 1.2.1" "User Commands"
+.SH NAME
+applesoylicon \- animated terminal rain with accelerometer-driven physics
+.SH SYNOPSIS
+.B applesoylicon
+.RI [ WORD ]
+.RI [ OPTIONS ]
+.SH DESCRIPTION
+.B applesoylicon
+draws animated character rain in an interactive terminal.
+The optional
+.I WORD
+is displayed inside the rain.  The default word is APPLESOYLICON.
+.PP
+Rain can use a fixed cardinal direction or react continuously to raw Linux IIO
+accelerometer readings.  Gyro mode applies the device mount matrix and simulates
+acceleration, inertia, drag, terminal velocity, trails, and screen-edge wrapping.
+.SH OPTIONS
+.TP
+.BI "--direction " DIR
+Set a fixed direction to
+.BR down ,
+.BR up ,
+.BR left ,
+or
+.BR right .
+The value
+.B auto
+enables physical sensor mode.  The default is
+.BR down .
+.TP
+.B --gyro
+Enable physical rain driven by raw Linux IIO acceleration.  This is equivalent
+to
+.BR "--direction auto" .
+.TP
+.BI "--palette " NAME
+Select
+.BR green ,
+.BR amber ,
+.BR ice ,
+or
+.BR soy .
+The default is
+.BR green .
+.TP
+.BI "--fps " N
+Set the frame rate from 5 through 60.  The default is 24.
+.TP
+.BI "--density " N
+Set rain density from 0.05 through 1.0.  In physical mode this controls the
+particle count.  The default is 0.72.
+.TP
+.BI "--message " TEXT
+Set the displayed word explicitly.  This is an alias for the positional
+.IR WORD .
+The value must contain 1 through 40 ASCII characters.
+.TP
+.BI "--seed " N
+Use a deterministic unsigned integer random seed.
+.TP
+.BR -h , " --help"
+Display command-line help and exit.
+.TP
+.BR -V , " --version"
+Display version information and exit.
+.SH KEYS
+.TP
+.BR q , " Esc" , " Ctrl-C"
+Exit and restore the terminal.
+.TP
+.BR [ " / " ]
+Decrease or increase rain density.
+.TP
+.B r
+Rotate a fixed rain direction clockwise.  Physical sensor mode ignores this
+key.
+.TP
+.B p
+Cycle through the color palettes.
+.TP
+.BR + " / " -
+Increase or decrease animation speed.
+.TP
+.B d
+Toggle between sparse and dense rain.
+.SH SENSOR MODE
+Sensor mode searches
+.I /sys/bus/iio/devices
+for a readable device exposing
+.IR in_accel_x_raw ,
+.IR in_accel_y_raw ,
+and
+.IR in_accel_z_raw .
+If available,
+.I in_accel_mount_matrix
+is applied before the values enter the simulation.  Readings are sampled at
+40 Hz and low-pass filtered.
+.PP
+If no compatible readable accelerometer exists, use a fixed
+.B --direction
+instead.
+.SH EXAMPLES
+.PP
+Run soy-colored rain with the default word:
+.PP
+.EX
+applesoylicon --palette soy
+.EE
+.PP
+Show a custom word and fall to the left:
+.PP
+.EX
+applesoylicon APPLE --direction left
+.EE
+.PP
+Use physical acceleration with sparse rain:
+.PP
+.EX
+applesoylicon SOY --gyro --density 0.25
+.EE
+.SH FILES
+.TP
+.I /sys/bus/iio/devices/iio:device*/in_accel_*_raw
+Raw accelerometer channels used by physical sensor mode.
+.SH EXIT STATUS
+Returns 0 on success, 1 on runtime failure, and 2 for invalid command-line
+arguments.
+.SH AUTHORS
+Maintained by appsfolder.
+.SH LICENSE
+MIT License.
+.SH SEE ALSO
+.BR stty (1)

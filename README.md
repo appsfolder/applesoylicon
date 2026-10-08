@@ -31,6 +31,9 @@ Drops have acceleration, inertia, drag, terminal velocity, wrapping and trails.
 Use `--density 0.05..1.0` or the `[`/`]` keys to control the particle count.
 Without a supported accelerometer, use a fixed direction.
 
+The complete command reference is available through `man applesoylicon` after
+installation.
+
 ## Install from source
 
 ```console
@@ -43,9 +46,9 @@ The `packaging/aur` directory contains a release `PKGBUILD`. Before submitting
 the first AUR release:
 
 1. Push this repository to `https://github.com/appsfolder/applesoylicon`.
-2. Create and push tag `v1.2.0`.
+2. Create and push tag `v1.2.1`.
 3. Create a GitHub release for the tag and attach the provided
-   `applesoylicon-1.2.0.tar.gz` release archive without modifying it.
+   `applesoylicon-1.2.1.tar.gz` release archive without modifying it.
 4. Run `makepkg --printsrcinfo > .SRCINFO`, then test with `makepkg -sic` and
    `namcap` if available.
 5. Clone the empty AUR repository and copy in `PKGBUILD` and `.SRCINFO`.
