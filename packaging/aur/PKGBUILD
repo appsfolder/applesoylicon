@@ -1,6 +1,6 @@
 # Maintainer: appsfolder <axelix@ass.engineering>
 pkgname=applesoylicon
-pkgver=1.1.1
+pkgver=1.2.0
 pkgrel=1
 pkgdesc='Playful Matrix-rain terminal screensaver'
 arch=('x86_64' 'aarch64')
@@ -9,7 +9,7 @@ license=('MIT')
 makedepends=('cargo')
 depends=('glibc' 'coreutils')
 source=("${pkgname}-${pkgver}.tar.gz::${url}/releases/download/v${pkgver}/${pkgname}-${pkgver}.tar.gz")
-sha256sums=('bb9c97471ecc1b477277282ad7e0204a815723b5984e3540b9226cbb5c42d2c6')
+sha256sums=('PLACEHOLDER')
 
 prepare() {
   cd "${pkgname}-${pkgver}"

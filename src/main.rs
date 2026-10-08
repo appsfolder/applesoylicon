@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::env;
 use std::fmt::Write as FmtWrite;
 use std::fs;
@@ -91,7 +92,7 @@ impl Direction {
 }
 
 struct Sensor {
-    directions: mpsc::Receiver<Direction>,
+    readings: mpsc::Receiver<[f64; 3]>,
 }
 
 impl Sensor {
@@ -102,11 +103,9 @@ impl Sensor {
             0.0, 1.0, 0.0, //
             0.0, 0.0, 1.0,
         ]);
-        let (tx, directions) = mpsc::channel();
+        let (tx, readings) = mpsc::channel();
         thread::spawn(move || {
             let mut filtered = [0.0_f64; 3];
-            let mut candidate = None;
-            let mut candidate_samples = 0_u8;
             loop {
                 let Some(raw) = read_acceleration(&device) else {
                     thread::sleep(Duration::from_millis(100));
@@ -116,21 +115,13 @@ impl Sensor {
                 for axis in 0..3 {
                     filtered[axis] = filtered[axis] * 0.62 + mounted[axis] * 0.38;
                 }
-                let next = gravity_direction(filtered[0], filtered[1]);
-                if next == candidate {
-                    candidate_samples = candidate_samples.saturating_add(1);
-                } else {
-                    candidate = next;
-                    candidate_samples = 1;
-                }
-                if candidate_samples == 3 && candidate.is_some_and(|value| tx.send(value).is_err())
-                {
+                if tx.send(filtered).is_err() {
                     break;
                 }
                 thread::sleep(Duration::from_millis(25));
             }
         });
-        Ok(Self { directions })
+        Ok(Self { readings })
     }
 }
 
@@ -182,6 +173,7 @@ fn apply_matrix(matrix: [f64; 9], vector: [f64; 3]) -> [f64; 3] {
     ]
 }
 
+#[cfg(test)]
 fn gravity_direction(x: f64, y: f64) -> Option<Direction> {
     let magnitude = x.abs().max(y.abs());
     if magnitude < 180.0 {
@@ -427,7 +419,7 @@ fn parse_args() -> Result<Option<Config>, String> {
 
 fn print_help() {
     println!(
-        "applesoylicon {VERSION} — terminal rain, zero consequences\n\nUSAGE:\n    applesoylicon [WORD] [OPTIONS]\n\nOPTIONS:\n    --direction <DIR>   down, up, left, right, or auto [default: down]\n    --gyro              Follow device orientation (same as --direction auto)\n    --palette <NAME>    green, amber, ice, or soy [default: green]\n    --fps <N>           Frames per second, 5-60 [default: 24]\n    --density <N>       Active-lane ratio, 0.05-1.0 [default: 0.72]\n    --message <TEXT>    Alias for positional WORD [default: APPLESOYLICON]\n    --seed <N>          Deterministic random seed\n    -h, --help          Print help\n    -V, --version       Print version\n\nKEYS:\n    q, Esc, Ctrl-C      Leave the rain\n    r                   Rotate direction clockwise\n    p                   Cycle palette\n    + / -               Change speed\n    d                   Toggle dense mode"
+        "applesoylicon {VERSION} — terminal rain, zero consequences\n\nUSAGE:\n    applesoylicon [WORD] [OPTIONS]\n\nOPTIONS:\n    --direction <DIR>   down, up, left, right, or auto [default: down]\n    --gyro              Physical rain driven by raw IIO acceleration\n    --palette <NAME>    green, amber, ice, or soy [default: green]\n    --fps <N>           Frames per second, 5-60 [default: 24]\n    --density <N>       Rain density, 0.05-1.0 [default: 0.72]\n    --message <TEXT>    Alias for positional WORD [default: APPLESOYLICON]\n    --seed <N>          Deterministic random seed\n    -h, --help          Print help\n    -V, --version       Print version\n\nKEYS:\n    q, Esc, Ctrl-C      Leave the rain\n    [ / ]               Decrease / increase density\n    r                   Rotate fixed direction clockwise\n    p                   Cycle palette\n    + / -               Change speed\n    d                   Toggle dense mode"
     );
 }
 
@@ -461,6 +453,9 @@ fn run(mut config: Config) -> io::Result<()> {
         Palette::named("ice").unwrap(),
         Palette::named("soy").unwrap(),
     ];
+    if let Some(sensor) = sensor {
+        return run_physics(config, rx, sensor, palettes);
+    }
     let mut palette_index = 0;
     let mut rng = Rng::new(config.seed);
     let (mut width, mut height) = terminal_size();
@@ -501,16 +496,19 @@ fn run(mut config: Config) -> io::Result<()> {
                         d.active = rng.unit() <= config.density;
                     }
                 }
-                _ => {}
-            }
-        }
-        if let Some(sensor) = &sensor {
-            while let Ok(direction) = sensor.directions.try_recv() {
-                if direction != config.direction {
-                    config.direction = direction;
-                    drops = make_drops(config.direction, width, height, config.density, &mut rng);
-                    print!("\x1b[2J");
+                b']' | b'}' => {
+                    config.density = (config.density + 0.1).min(1.0);
+                    for d in &mut drops {
+                        d.active = rng.unit() <= config.density;
+                    }
                 }
+                b'[' | b'{' => {
+                    config.density = (config.density - 0.1).max(0.05);
+                    for d in &mut drops {
+                        d.active = rng.unit() <= config.density;
+                    }
+                }
+                _ => {}
             }
         }
         let (new_width, new_height) = terminal_size();
@@ -560,6 +558,182 @@ fn run(mut config: Config) -> io::Result<()> {
             drop.y += drop.speed;
             if head - drop.length as isize > extent as isize {
                 reset_drop(drop, extent, config.density, &mut rng, false);
+            }
+        }
+        if mark.0 < height && mark.1 + config.message.len() <= width {
+            let _ = write!(
+                out,
+                "\x1b[{};{}H{}{}",
+                mark.0 + 1,
+                mark.1 + 1,
+                config.palette.mark,
+                config.message
+            );
+        }
+        print!("{out}");
+        io::stdout().flush()?;
+        thread::sleep(frame_time.saturating_sub(frame_started.elapsed()));
+    }
+}
+
+struct Particle {
+    x: f64,
+    y: f64,
+    vx: f64,
+    vy: f64,
+    trail: VecDeque<(usize, usize)>,
+}
+
+fn particle_target(width: usize, height: usize, density: f64) -> usize {
+    (((width * height) as f64 * density / 18.0).round() as usize).clamp(8, 900)
+}
+
+fn new_particle(width: usize, height: usize, rng: &mut Rng) -> Particle {
+    Particle {
+        x: rng.unit() * width.max(1) as f64,
+        y: rng.unit() * height.max(1) as f64,
+        vx: (rng.unit() - 0.5) * 0.16,
+        vy: (rng.unit() - 0.5) * 0.08,
+        trail: VecDeque::with_capacity(10),
+    }
+}
+
+fn resize_particles(
+    particles: &mut Vec<Particle>,
+    width: usize,
+    height: usize,
+    density: f64,
+    rng: &mut Rng,
+) {
+    let target = particle_target(width, height, density);
+    particles.truncate(target);
+    while particles.len() < target {
+        particles.push(new_particle(width, height, rng));
+    }
+}
+
+fn physics_acceleration(reading: [f64; 3]) -> (f64, f64) {
+    let planar = reading[0].hypot(reading[1]);
+    let total = planar.hypot(reading[2]).max(1.0);
+    if planar < total * 0.035 {
+        return (0.0, 0.0);
+    }
+    let tilt = (planar / total).clamp(0.0, 1.0);
+    // Terminal cells are roughly twice as tall as they are wide.
+    (
+        reading[0] / planar * 0.22 * tilt,
+        reading[1] / planar * 0.11 * tilt,
+    )
+}
+
+fn run_physics(
+    mut config: Config,
+    keys: mpsc::Receiver<u8>,
+    sensor: Sensor,
+    palettes: [Palette; 4],
+) -> io::Result<()> {
+    let mut palette_index = 0;
+    let mut rng = Rng::new(config.seed);
+    let (mut width, mut height) = terminal_size();
+    let mut particles = Vec::new();
+    resize_particles(&mut particles, width, height, config.density, &mut rng);
+    let mut gravity = [0.0, 700.0, 0.0];
+    let mut frame_time = Duration::from_millis(1000 / config.fps);
+    let mut previous_cells: Vec<(usize, usize)> = Vec::new();
+    let mut mark = new_mark(width, height, config.message.len(), &mut rng);
+
+    loop {
+        let frame_started = Instant::now();
+        while let Ok(key) = keys.try_recv() {
+            match key {
+                b'q' | 27 | 3 => return Ok(()),
+                b'p' => {
+                    palette_index = (palette_index + 1) % palettes.len();
+                    config.palette = palettes[palette_index];
+                }
+                b'+' | b'=' => {
+                    frame_time = frame_time
+                        .saturating_sub(Duration::from_millis(4))
+                        .max(Duration::from_millis(16));
+                }
+                b'-' | b'_' => {
+                    frame_time =
+                        (frame_time + Duration::from_millis(4)).min(Duration::from_millis(200));
+                }
+                b']' | b'}' => {
+                    config.density = (config.density + 0.1).min(1.0);
+                    resize_particles(&mut particles, width, height, config.density, &mut rng);
+                }
+                b'[' | b'{' => {
+                    config.density = (config.density - 0.1).max(0.05);
+                    resize_particles(&mut particles, width, height, config.density, &mut rng);
+                }
+                b'd' => {
+                    config.density = if config.density < 0.9 { 1.0 } else { 0.35 };
+                    resize_particles(&mut particles, width, height, config.density, &mut rng);
+                }
+                _ => {}
+            }
+        }
+        while let Ok(reading) = sensor.readings.try_recv() {
+            gravity = reading;
+        }
+
+        let (new_width, new_height) = terminal_size();
+        if (new_width, new_height) != (width, height) {
+            (width, height) = (new_width, new_height);
+            particles.clear();
+            resize_particles(&mut particles, width, height, config.density, &mut rng);
+            previous_cells.clear();
+            mark = new_mark(width, height, config.message.len(), &mut rng);
+            print!("\x1b[2J");
+        }
+
+        let (ax, ay) = physics_acceleration(gravity);
+        let mut out = String::with_capacity((particles.len() * 10 + previous_cells.len()) * 16);
+        for (x, y) in previous_cells.drain(..) {
+            let _ = write!(out, "\x1b[{};{}H ", y + 1, x + 1);
+        }
+
+        for particle in &mut particles {
+            particle.vx = (particle.vx + ax) * 0.965;
+            particle.vy = (particle.vy + ay) * 0.965;
+            let speed = particle.vx.hypot(particle.vy);
+            if speed > 2.8 {
+                particle.vx *= 2.8 / speed;
+                particle.vy *= 2.8 / speed;
+            }
+            particle.x += particle.vx;
+            particle.y += particle.vy;
+
+            let wrapped = particle.x < 0.0
+                || particle.x >= width as f64
+                || particle.y < 0.0
+                || particle.y >= height as f64;
+            particle.x = particle.x.rem_euclid(width.max(1) as f64);
+            particle.y = particle.y.rem_euclid(height.max(1) as f64);
+            if wrapped {
+                particle.trail.clear();
+            }
+
+            let cell = (particle.x as usize, particle.y as usize);
+            if particle.trail.back().copied() != Some(cell) {
+                particle.trail.push_back(cell);
+                while particle.trail.len() > 9 {
+                    particle.trail.pop_front();
+                }
+            }
+            for (index, &(x, y)) in particle.trail.iter().enumerate() {
+                let color = if index + 1 == particle.trail.len() {
+                    config.palette.head
+                } else if index * 2 >= particle.trail.len() {
+                    config.palette.near
+                } else {
+                    config.palette.far
+                };
+                let glyph = GLYPHS[rng.usize(GLYPHS.len())] as char;
+                let _ = write!(out, "\x1b[{};{}H{}{}", y + 1, x + 1, color, glyph);
+                previous_cells.push((x, y));
             }
         }
         if mark.0 < height && mark.1 + config.message.len() <= width {
@@ -742,5 +916,19 @@ mod tests {
         assert_eq!(gravity_direction(20.0, -800.0), Some(Direction::Up));
         assert_eq!(gravity_direction(50.0, 40.0), None);
         assert_eq!(gravity_direction(700.0, 700.0), None);
+    }
+
+    #[test]
+    fn physical_acceleration_preserves_raw_vector_direction() {
+        let (right, down) = physics_acceleration([800.0, 400.0, 800.0]);
+        assert!(right > 0.0);
+        assert!(down > 0.0);
+        assert!(right > down);
+        assert_eq!(physics_acceleration([0.0, 0.0, 1000.0]), (0.0, 0.0));
+    }
+
+    #[test]
+    fn density_controls_particle_count() {
+        assert!(particle_target(80, 24, 0.9) > particle_target(80, 24, 0.2));
     }
 }
