@@ -38,6 +38,7 @@ Persistent defaults use `--setup` and are stored under the XDG config directory:
 
 ```console
 $ applesoylicon --setup gyro-offset=90 gyro=true palette=soy density=0.4
+$ applesoylicon --setup gyro-mirror=x
 $ applesoylicon --setup show
 $ applesoylicon --setup reset
 ```
@@ -57,9 +58,9 @@ The `packaging/aur` directory contains a release `PKGBUILD`. Before submitting
 the first AUR release:
 
 1. Push this repository to `https://github.com/appsfolder/applesoylicon`.
-2. Create and push tag `v1.3.0`.
+2. Create and push tag `v1.3.1`.
 3. Create a GitHub release for the tag and attach the provided
-   `applesoylicon-1.3.0.tar.gz` release archive without modifying it.
+   `applesoylicon-1.3.1.tar.gz` release archive without modifying it.
 4. Run `makepkg --printsrcinfo > .SRCINFO`, then test with `makepkg -sic` and
    `namcap` if available.
 5. Clone the empty AUR repository and copy in `PKGBUILD` and `.SRCINFO`.

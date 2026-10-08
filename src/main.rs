@@ -64,6 +64,27 @@ struct Config {
     direction: Direction,
     gyro: bool,
     gyro_offset: u16,
+    gyro_mirror: GyroMirror,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GyroMirror {
+    None,
+    X,
+    Y,
+    Both,
+}
+
+impl GyroMirror {
+    fn named(value: &str) -> Option<Self> {
+        match value {
+            "none" => Some(Self::None),
+            "x" => Some(Self::X),
+            "y" => Some(Self::Y),
+            "both" => Some(Self::Both),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -390,6 +411,8 @@ fn validate_setting(key: &str, value: &str) -> Result<String, String> {
             .filter(|angle| matches!(angle, 0 | 90 | 180 | 270))
             .map(|_| value.to_owned())
             .ok_or_else(|| "gyro-offset must be 0, 90, 180, or 270".to_owned()),
+        "gyro-mirror" if GyroMirror::named(value).is_some() => Ok(value.to_owned()),
+        "gyro-mirror" => Err("gyro-mirror must be none, x, y, or both".to_owned()),
         "palette" => Err("palette must be green, amber, ice, or soy".to_owned()),
         "message" => Err("message must be 1-40 ASCII characters".to_owned()),
         unknown => Err(format!("unknown setting '{unknown}'")),
@@ -489,6 +512,10 @@ fn parse_args() -> Result<Option<Config>, String> {
         .and_then(|value| value.parse().ok())
         .filter(|angle| matches!(angle, 0 | 90 | 180 | 270))
         .unwrap_or(0_u16);
+    let mut gyro_mirror = saved
+        .get("gyro-mirror")
+        .and_then(|value| GyroMirror::named(value))
+        .unwrap_or(GyroMirror::None);
     let random_seed = || {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -513,7 +540,7 @@ fn parse_args() -> Result<Option<Config>, String> {
             }
             "--gyro" => gyro = true,
             "--palette" | "--fps" | "--density" | "--message" | "--seed" | "--direction"
-            | "--gyro-offset" => {
+            | "--gyro-offset" | "--gyro-mirror" => {
                 let flag = args[i].clone();
                 i += 1;
                 let value = args
@@ -552,6 +579,11 @@ fn parse_args() -> Result<Option<Config>, String> {
                             return Err("--gyro-offset must be 0, 90, 180, or 270".to_owned());
                         }
                     }
+                    "--gyro-mirror" => {
+                        gyro_mirror = GyroMirror::named(value).ok_or_else(|| {
+                            "--gyro-mirror must be none, x, y, or both".to_owned()
+                        })?;
+                    }
                     "--seed" => {
                         seed = value
                             .parse()
@@ -589,12 +621,13 @@ fn parse_args() -> Result<Option<Config>, String> {
         direction,
         gyro,
         gyro_offset,
+        gyro_mirror,
     }))
 }
 
 fn print_help() {
     println!(
-        "applesoylicon {VERSION} — terminal rain, zero consequences\n\nUSAGE:\n    applesoylicon [WORD] [OPTIONS]\n    applesoylicon --setup KEY=VALUE...\n    applesoylicon --setup [show|reset]\n\nOPTIONS:\n    --direction <DIR>   down, up, left, right, or auto [default: down]\n    --gyro              Physical rain driven by raw IIO acceleration\n    --gyro-offset <DEG> Rotate sensor vector: 0, 90, 180, or 270\n    --palette <NAME>    green, amber, ice, or soy [default: green]\n    --fps <N>           Frames per second, 5-60 [default: 24]\n    --density <N>       Rain density, 0.05-1.0 [default: 0.72]\n    --message <TEXT>    Alias for positional WORD [default: APPLESOYLICON]\n    --seed <N>          Deterministic random seed\n    --setup ...         Save, show, or reset persistent defaults\n    -h, --help          Print help\n    -V, --version       Print version\n\nSETUP KEYS:\n    palette fps density message seed direction gyro gyro-offset\n\nKEYS:\n    q, Esc, Ctrl-C      Leave the rain\n    [ / ]               Decrease / increase density\n    r                   Rotate fixed direction clockwise\n    p                   Cycle palette\n    + / -               Change speed\n    d                   Toggle dense mode"
+        "applesoylicon {VERSION} — terminal rain, zero consequences\n\nUSAGE:\n    applesoylicon [WORD] [OPTIONS]\n    applesoylicon --setup KEY=VALUE...\n    applesoylicon --setup [show|reset]\n\nOPTIONS:\n    --direction <DIR>   down, up, left, right, or auto [default: down]\n    --gyro              Physical rain driven by raw IIO acceleration\n    --gyro-offset <DEG> Rotate sensor vector: 0, 90, 180, or 270\n    --gyro-mirror <AXIS> none, x, y, or both [default: none]\n    --palette <NAME>    green, amber, ice, or soy [default: green]\n    --fps <N>           Frames per second, 5-60 [default: 24]\n    --density <N>       Rain density, 0.05-1.0 [default: 0.72]\n    --message <TEXT>    Alias for positional WORD [default: APPLESOYLICON]\n    --seed <N>          Deterministic random seed\n    --setup ...         Save, show, or reset persistent defaults\n    -h, --help          Print help\n    -V, --version       Print version\n\nSETUP KEYS:\n    palette fps density message seed direction gyro gyro-offset gyro-mirror\n\nKEYS:\n    q, Esc, Ctrl-C      Leave the rain\n    [ / ]               Decrease / increase density\n    r                   Rotate fixed direction clockwise\n    p                   Cycle palette\n    + / -               Change speed\n    d                   Toggle dense mode"
     );
 }
 
@@ -810,6 +843,16 @@ fn rotate_sensor(reading: [f64; 3], offset: u16) -> [f64; 3] {
     }
 }
 
+fn mirror_sensor(mut reading: [f64; 3], mirror: GyroMirror) -> [f64; 3] {
+    if matches!(mirror, GyroMirror::X | GyroMirror::Both) {
+        reading[0] = -reading[0];
+    }
+    if matches!(mirror, GyroMirror::Y | GyroMirror::Both) {
+        reading[1] = -reading[1];
+    }
+    reading
+}
+
 fn run_physics(
     mut config: Config,
     keys: mpsc::Receiver<u8>,
@@ -873,7 +916,11 @@ fn run_physics(
             print!("\x1b[2J");
         }
 
-        let (ax, ay) = physics_acceleration(rotate_sensor(gravity, config.gyro_offset));
+        let corrected = mirror_sensor(
+            rotate_sensor(gravity, config.gyro_offset),
+            config.gyro_mirror,
+        );
+        let (ax, ay) = physics_acceleration(corrected);
         let mut out = String::with_capacity((particles.len() * 10 + previous_cells.len()) * 16);
         for (x, y) in previous_cells.drain(..) {
             let _ = write!(out, "\x1b[{};{}H ", y + 1, x + 1);
@@ -1123,5 +1170,14 @@ mod tests {
         assert_eq!(rotate_sensor(reading, 90), [-1.0, 2.0, 3.0]);
         assert_eq!(rotate_sensor(reading, 180), [-2.0, -1.0, 3.0]);
         assert_eq!(rotate_sensor(reading, 270), [1.0, -2.0, 3.0]);
+    }
+
+    #[test]
+    fn gyro_mirror_flips_selected_screen_axes() {
+        let reading = [2.0, 1.0, 3.0];
+        assert_eq!(mirror_sensor(reading, GyroMirror::None), [2.0, 1.0, 3.0]);
+        assert_eq!(mirror_sensor(reading, GyroMirror::X), [-2.0, 1.0, 3.0]);
+        assert_eq!(mirror_sensor(reading, GyroMirror::Y), [2.0, -1.0, 3.0]);
+        assert_eq!(mirror_sensor(reading, GyroMirror::Both), [-2.0, -1.0, 3.0]);
     }
 }
