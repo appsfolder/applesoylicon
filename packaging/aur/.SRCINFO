@@ -1,6 +1,6 @@
 pkgbase = applesoylicon
 	pkgdesc = Playful Matrix-rain terminal screensaver
-	pkgver = 1.1.0
+	pkgver = 1.1.1
 	pkgrel = 1
 	url = https://github.com/appsfolder/applesoylicon
 	arch = x86_64
@@ -9,8 +9,7 @@ pkgbase = applesoylicon
 	makedepends = cargo
 	depends = glibc
 	depends = coreutils
-	optdepends = iio-sensor-proxy: automatic rain direction from device orientation
-	source = applesoylicon-1.1.0.tar.gz::https://github.com/appsfolder/applesoylicon/releases/download/v1.1.0/applesoylicon-1.1.0.tar.gz
-	sha256sums = 3022b9a0aeb49c956bae877c6c2f8841950cfff43612bacc1c830a1b1206959a
+	source = applesoylicon-1.1.1.tar.gz::https://github.com/appsfolder/applesoylicon/releases/download/v1.1.1/applesoylicon-1.1.1.tar.gz
+	sha256sums = bb9c97471ecc1b477277282ad7e0204a815723b5984e3540b9226cbb5c42d2c6
 
 pkgname = applesoylicon
